@@ -1,0 +1,5 @@
+/dist/
+/.hpc/
+/test.git/
+/cunit.dump
+/*.tix
