@@ -1,0 +1,18 @@
+[submodule "lib/c2hsc"]
+	path = lib/c2hsc
+	url = git://github.com/jwiegley/c2hsc.git
+[submodule "lib/general-prelude"]
+	path = lib/general-prelude
+	url = git://github.com/jwiegley/general-prelude.git
+[submodule "lib/gitlib"]
+	path = lib/gitlib
+	url = git://github.com/jwiegley/gitlib.git
+[submodule "lib/hlibgit2"]
+	path = lib/hlibgit2
+	url = git://github.com/jwiegley/hlibgit2.git
+[submodule "lib/stringable"]
+	path = lib/stringable
+	url = git://github.com/jwiegley/stringable.git
+[submodule "lib/svndump"]
+	path = lib/svndump
+	url = git://github.com/jwiegley/svndump.git

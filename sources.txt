@@ -1,0 +1,7 @@
+c2hsc
+general-prelude
+gitlib
+hlibgit2
+hsubconvert
+stringable
+svndump
