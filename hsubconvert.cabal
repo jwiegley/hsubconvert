@@ -1,6 +1,6 @@
 Name: hsubconvert
 
-Version:  0.0.1
+Version:  0.0.2
 Synopsis: One-time, faithful conversion of Subversion repositories to Git
 
 Description: One-time, faithful conversion of Subversion repositories to Git.
