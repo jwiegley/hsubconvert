@@ -4,12 +4,13 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
+{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
 module Main where
 
-import           Control.Lens
 import           Control.Monad.Trans
 import           Control.Monad.Trans.State
+import           Control.Concurrent.ParallelIO
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Internal as BI
 import qualified Data.ByteString.Lazy as BL
@@ -18,7 +19,6 @@ import           Data.Git
 import           Data.Stringable hiding (fromText, length)
 import           Data.Text.Format ( format )
 import           Data.Text.Lazy (Text)
---import qualified Data.Text.Lazy as T
 import           Filesystem (isDirectory, removeTree)
 import           Filesystem.Path.CurrentOS hiding (null, toText)
 import           Foreign.ForeignPtr
@@ -95,83 +95,79 @@ main = do
     file <- BL.readFile (head (files opts))
 
     let revs = readSvnDump file
-    (c, _, lastRev) <-           -- _ = finalState
-      foldM
-        (\(co, st, _) rev -> do
-          when (isJust co) $
-            reportProgress False (revNumber rev) (fromJust co)
-          (co', st') <- flip runStateT st $ applyRevision repo co rev
-          let st'' = case co' of
-                       Nothing -> st'
-                       Just x  ->
-                         pastTrees %~ (:) (revNumber rev, x^.commitTree) $ st'
-          return (co', st'', rev))
-        (Nothing, HSubconvertState [], head revs) revs
+    (Just c, _) <-               -- _ = finalState
+      flip runStateT (HSubconvertState []) $
+        foldM (\co rev -> do
+                reportProgress False (revNumber rev)
 
-    case c of
-      Nothing -> putStrLn "No revisions were converted!"
-      Just c' -> do
-        reportProgress True (revNumber lastRev) c'
+                co' <- applyRevision repo co rev
+                -- Store a reference to the commit tree's hash rather than the
+                -- object itself, since in most cases it will never be
+                -- referenced, and even when it is it should only happen a few
+                -- times.  It's much cheaper heap-wise to just reload the Git
+                -- object from disk at that time, since even then only a
+                -- sub-tree will typically be needed
+                let ObjRef ct = commitTree co'
+                ctr <- lift $ objectRef ct
+                pastTrees %= (:) (revNumber rev, ctr)
+                return (Just co'))
+              Nothing revs
 
-        cid <- objectId c'
-        writeRef_ $ createRef "refs/heads/master" (RefTargetId cid) repo
-        writeRef_ $
-          createRef "HEAD" (RefTargetSymbolic "refs/heads/master") repo
+    cid <- objectId c
+    writeRef_ $ createRef "refs/heads/master" (RefTargetId cid) repo
+    writeRef_ $
+      createRef "HEAD" (RefTargetSymbolic "refs/heads/master") repo
 
-        putStr "\nConversion completed\n"
+    putStr "\nConversion completed\n"
+
+    stopGlobalPool
 
   where
-    reportProgress :: Updatable a => Bool -> Int -> a -> IO ()
-    reportProgress force num obj
-      | force || num < 10 = showProgress num obj
-      | num < 100        = when (num `mod` 10 == 0)   $ showProgress num obj
-      | num < 1000       = when (num `mod` 100 == 0)  $ showProgress num obj
-      | otherwise        = when (num `mod` 1000 == 0) $ showProgress num obj
+    reportProgress force num
+      | force || num < 10 = showProgress num
+      | num < 100        = when (num `mod` 10 == 0)   $ showProgress num
+      | num < 1000       = when (num `mod` 100 == 0)  $ showProgress num
+      | otherwise        = when (num `mod` 1000 == 0) $ showProgress num
 
-    showProgress :: Updatable a => Int -> a -> IO ()
-    showProgress num _ =
-      putStr $ "Converting " ++ show num ++ "...\r"
-      -- void (forkOS (update_ obj))
+    showProgress num =
+      lift $ putStr $ "Converting " ++ show num ++ "...\r"
 
-applyRevision :: Repository -> Maybe Commit -> Revision
-              -> SIO (Maybe Commit)
-applyRevision repo c rev = do
-  result <- foldM (\co op -> co `seq` foldOp co op)
-                 (Left (makeCommit c)) (revOperations rev)
-  case result of
-    Left _  -> return c
-    Right x -> Just <$> x
+applyRevision :: Repository -> Maybe Commit -> Revision -> SIO Commit
+applyRevision repo maybeCommit rev = do
+  lift $ debugL (format "Applying revision r{}" [ revNumber rev ])
+  foldl' foldOp (return (makeCommit maybeCommit)) (revOperations rev)
+  >>= lift . update
 
   where
     makeCommit co =
       let nco = case co of
                   Nothing -> createCommit repo
-                  Just p  ->   commitTree    .~ p^.commitTree
-                            $ commitParents .~ [ObjRef p]
-                            $ createCommit repo
+                  Just p  -> (createCommit repo) {
+                      commitTree     = commitTree p
+                    , commitParents = [ObjRef p] }
           sig = Signature {
-                    _signatureName  = fromMaybe "Unknown" (revAuthor rev)
-                  , _signatureEmail = "unknown@unknown.org"
-                  , _signatureWhen  = revDate rev }
+                    signatureName  = fromMaybe "Unknown" (revAuthor rev)
+                  , signatureEmail = "unknown@unknown.org"
+                  , signatureWhen  = revDate rev }
 
-      in   commitAuthor    .~ sig
-         $ commitCommitter .~ sig
-         $ commitLog       .~ fromMaybe "" (revComment rev) $ nco
+      in nco { commitAuthor    = sig
+             , commitCommitter = sig
+             , commitLog       = fromMaybe "" (revComment rev) }
 
-    foldOp :: Either Commit (SIO Commit) -> Operation
-           -> SIO (Either Commit (SIO Commit))
-    foldOp c' op
-      | opKind op == File && BL.null (opContents op) = return c'
+    foldOp :: SIO Commit -> Operation -> SIO Commit
+    foldOp c op
+      | opKind op == File && BL.null (opContents op) = c
 
-      | opKind op == File && (opAction op == Add || opAction op == Change) = do
+      | opKind op == File
+        && (opAction op == Add || opAction op == Change) = do
         lift $ debugL (format "F{}: {}"
                               [ if opAction op == Add then "A" else "C"
                               , opPathname op ])
-        addFile c' op
+        addFile c op
 
       | opAction op == Delete = do
         lift $ debugL (format "?D: {}" [ opPathname op ])
-        return $ Right $ deleteItem c' op
+        deleteEntry c op
 
       | isJust (opCopyFromRev op)
         && opKind op == Directory && opAction op == Add = do
@@ -179,53 +175,45 @@ applyRevision repo c rev = do
                               [ fromJust (opCopyFromPath op)
                               , show $ fromJust (opCopyFromRev op)
                               , opPathname op ])
-        copyEntry c' op
+        copyEntry c op
 
-      | otherwise = return c'
+      | otherwise = c
 
-    addFile c' op
-      | isJust (opCopyFromRev op) = copyEntry c' op
-      | otherwise = returnUpdate c' op (wrapBlob op repo)
+    addFile c op
+      | isJust (opCopyFromRev op) = copyEntry c op
+      | otherwise = updateEntry c op (wrapBlob op repo)
 
-    copyEntry c' op = do
-      pastTree  <- getPastTree (fromJust (opCopyFromRev op))
+    updateEntry :: SIO Commit -> Operation -> TreeEntry -> SIO Commit
+    updateEntry c op entry =
+      c >>= lift . updateCommit (opFilePath op) entry
+
+    deleteEntry :: SIO Commit -> Operation -> SIO Commit
+    deleteEntry c op =
+      c >>= lift . removeFromCommitTree (opFilePath op)
+
+    copyEntry :: SIO Commit -> Operation -> SIO Commit
+    copyEntry c op = do
+      pastTree <- getPastTree (fromJust (opCopyFromRev op))
       case pastTree of
         Nothing -> do
           lift $ errorL $ format "Could not find past tree for r{}"
-                                 [ show $ fromJust (opCopyFromRev op) ]
-          return c'
-        Just pastTree' ->
-          applyToCommit c' $ \c'' ->
-            lift $ withObject pastTree' c'' $ \pt -> do
-              pastEntry <- lookupTreeEntry (opCopyFromFilePath op) pt
-              case pastEntry of
-                Nothing -> do
-                  error $ toString
-                    $ format "Could not find {} in tree r{}"
-                             [ fromJust (opCopyFromPath op)
-                             , show $ fromJust (opCopyFromRev op) ]
-                Just entry -> return entry
-          >>= returnUpdate c' op
-
-    returnUpdate c' op entry =
-      return $ Right $ updateCommit' (opFilePath op) entry c'
-
-    deleteItem c' op =
-      applyToCommitAndUpdate c' $ lift . removeFromCommitTree (opFilePath op)
-
-applyToCommit :: Either a (SIO a) -> (a -> SIO b) -> SIO b
-applyToCommit eitherCommit f =
-  (case eitherCommit of Left x -> return x; Right y -> y) >>= f
-
-applyToCommitAndUpdate :: Updatable a
-                       => Either a (SIO a) -> (a -> SIO a) -> SIO a
-applyToCommitAndUpdate eitherCommit f =
-  applyToCommit eitherCommit f >>= lift . update
-
-updateCommit' :: FilePath -> TreeEntry -> Either Commit (SIO Commit)
-              -> SIO Commit
-updateCommit' path entry c =
-  applyToCommitAndUpdate c $ lift . updateCommit path entry
+                                 [ fromJust (opCopyFromRev op) ]
+          c
+        Just pastTree' -> do
+          c' <- c
+          -- Lookup the past object to be copied from the pastTree'.  c' is
+          -- merely the "reference" object, mainly so withObject knows where
+          -- the repository is.
+          entry <- lift $ withObject pastTree' c' $ \pt -> do
+            pastEntry <- lookupTreeEntry (opCopyFromFilePath op) pt
+            case pastEntry of
+              Nothing ->
+                error $ toString
+                  $ format "Could not find {} in tree r{}"
+                           [ fromJust (opCopyFromPath op)
+                           , show $ fromJust (opCopyFromRev op) ]
+              Just entry -> return entry
+          updateEntry c op entry
 
 getPastTree :: Int -> SIO (Maybe (ObjRef Tree))
 getPastTree rev = return . lookup rev . (^.pastTrees) =<< get
@@ -237,13 +225,13 @@ opCopyFromFilePath :: Operation -> FilePath
 opCopyFromFilePath = toFilePath . fromJust . opCopyFromPath
 
 opBlob :: Operation -> Repository -> Blob
-opBlob op = createBlob (lazyToStrict (opContents op))
+opBlob = createBlob . lazyToStrict . opContents
 
 wrapBlob :: Operation -> Repository -> TreeEntry
 wrapBlob op repo = BlobEntry (ObjRef (opBlob op repo)) False
 
 lazyToStrict :: BL.ByteString -> B.ByteString
-lazyToStrict lb = BI.unsafeCreate len $ go lb
+lazyToStrict lb = BI.unsafeCreate len (go lb)
   where
     len = BLI.foldlChunks (\l sb -> l + B.length sb) 0 lb
 
@@ -254,21 +242,21 @@ lazyToStrict lb = BI.unsafeCreate len $ go lb
         go r (ptr `plusPtr` l)
 
 debugL :: Text -> IO ()
-debugL = debugM "pushme" . toString
+debugL = debugM "hsubconvert" . toString
 
 infoL :: Text -> IO ()
-infoL = infoM "pushme" . toString
+infoL = infoM "hsubconvert" . toString
 
 noticeL :: Text -> IO ()
-noticeL = noticeM "pushme" . toString
+noticeL = noticeM "hsubconvert" . toString
 
 warningL :: Text -> IO ()
-warningL = warningM "pushme" . toString
+warningL = warningM "hsubconvert" . toString
 
 errorL :: Text -> IO ()
-errorL = errorM "pushme" . toString
+errorL = errorM "hsubconvert" . toString
 
 criticalL :: Text -> IO ()
-criticalL = criticalM "pushme" . toString
+criticalL = criticalM "hsubconvert" . toString
 
 -- Main.hs (hsubconvert) ends here

@@ -1,7 +1,0 @@
-lib/general-prelude/
-lib/stringable/
-lib/svndump/
-lib/c2hsc/
-lib/hlibgit2/
-lib/gitlib/
-./
