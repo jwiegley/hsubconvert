@@ -24,9 +24,9 @@ import           Filesystem.Path.CurrentOS hiding (null, toText)
 import           Foreign.ForeignPtr
 import           Foreign.Ptr
 import           GHC.Conc
+import           Options.Applicative
 import           Prelude.General
 import           Subversion.Dump
-import           System.Console.CmdArgs
 import           System.Environment
 import           System.Log.Logger
 
@@ -46,20 +46,18 @@ data HSubconvert = HSubconvert { jobs    :: Int
                                , verbose :: Bool
                                , debug   :: Bool
                                , files   :: [String] }
-    deriving (Data, Typeable, Show, Eq)
 
-hSubconvert :: HSubconvert
+hSubconvert :: Parser HSubconvert
 hSubconvert = HSubconvert
-    { jobs    = def &= name "j" &= typ "INT"
-                    &= help "Run INT concurrent jobs (default: 4)"
-    , verbose = def &= name "v"
-                    &= help "Report progress verbosely"
-    , debug   = def &= name "D"
-                    &= help "Report debug information"
-    , files   = def &= args } &=
-    summary hSubconvertSummary &=
-    program "hsubconvert" &=
-    help "One-time, faithful conversion of Subversion repositories to Git"
+    <$> option ( long "jobs" <> short 'j' <>
+                 help "Run INT concurrent jobs (default: 4)" )
+    <*> switch ( long "verbose" <> short 'v' <>
+                 help "Report progress verbosely" )
+    <*> switch ( long "debug" <> short 'D' <>
+                 help "Report debug information" )
+    <*> arguments
+    <*> header hSubconvertSummary
+    <*> progDesc "Faithful conversion of Subversion repositories to Git"
 
 data HSubconvertState = HSubconvertState { _pastTrees :: [(Int, ObjRef Tree)] }
                       deriving Show

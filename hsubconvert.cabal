@@ -23,22 +23,23 @@ Executable hsubconvert
     Build-depends: base >= 4 && < 5
                  , svndump
                  , gitlib
-                 , general-prelude >= 0.1
-                 , bytestring      >= 0.9.2.1
-                 , cmdargs         >= 0.10
-                 , hslogger        >= 1.2.0
-                 , lens            >= 3.0.2
-                 , mtl             >= 2.1.2
-                 , parallel-io     >= 0.3.2
-                 , regex-posix     >= 0.95.2
-                 , system-filepath >= 0.4.7
-                 , system-fileio   >= 0.3.10
-                 , text            >= 0.11.2.0
-                 , text-format     >= 0.3.0.8
-                 , time            >= 1.4
-                 , stringable      >= 0.1.1
-                 , transformers    >= 0.3.0
-                 , unix            >= 2.5
+                 , bytestring           >= 0.9.2.1
+                 , cmdargs              >= 0.10
+                 , general-prelude      >= 0.1
+                 , hslogger             >= 1.2.0
+                 , lens                 >= 3.0.2
+                 , mtl                  >= 2.1.2
+                 , optparse-applicative >= 0.4.2
+                 , parallel-io          >= 0.3.2
+                 , regex-posix          >= 0.95.2
+                 , stringable           >= 0.1.1
+                 , system-fileio        >= 0.3.10
+                 , system-filepath      >= 0.4.7
+                 , text                 >= 0.11.2.0
+                 , text-format          >= 0.3.0.8
+                 , time                 >= 1.4
+                 , transformers         >= 0.3.0
+                 , unix                 >= 2.5
 
 Source-repository head
   type:     git
